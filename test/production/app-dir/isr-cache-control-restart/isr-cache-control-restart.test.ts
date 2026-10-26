@@ -1,4 +1,4 @@
-import { nextTestSetup } from 'e2e-utils'
+import { FileRef, nextTestSetup } from 'e2e-utils'
 import { load } from 'cheerio'
 import {
   fetchViaHTTP,
@@ -50,6 +50,54 @@ describe('isr-cache-control-restart', () => {
         const repeated = await next.fetch('/1')
         expect(repeated.headers.get('x-nextjs-cache')).toBe('HIT')
         expect(repeated.headers.get('cache-control')).toBe(cacheControl)
+      })
+    }
+  )
+
+  describe.each([0, 50 * 1024 * 1024])(
+    'Cache Components file-system cache (memory size %i)',
+    (cacheMaxMemorySize) => {
+      const { next } = nextTestSetup({
+        files: {
+          app: new FileRef(join(__dirname, 'cache-components', 'app')),
+        },
+        nextConfig: {
+          cacheComponents: true,
+          partialPrefetching: false,
+          cacheMaxMemorySize,
+        },
+      })
+
+      it('serves an on-demand static page and its RSC payload from disk after a restart', async () => {
+        const rendered = await next.fetch('/disk-cached')
+        expect(rendered.status).toBe(200)
+        expect(rendered.headers.get('x-nextjs-cache')).toBe('MISS')
+        const cacheControl = rendered.headers.get('cache-control')
+        expect(cacheControl).toContain('s-maxage=3600')
+        expect(load(await rendered.text())('#page').text()).toBe(
+          'page disk-cached'
+        )
+
+        // With memory disabled, this already requires a successful disk read.
+        const cached = await next.fetch('/disk-cached')
+        expect(cached.headers.get('x-nextjs-cache')).toBe('HIT')
+        await cached.text()
+
+        await next.stop()
+        await next.start({ skipBuild: true })
+
+        const restarted = await next.fetch('/disk-cached')
+        expect(restarted.status).toBe(200)
+        expect(restarted.headers.get('x-nextjs-cache')).toBe('HIT')
+        expect(restarted.headers.get('cache-control')).toBe(cacheControl)
+        expect(load(await restarted.text())('#page').text()).toBe(
+          'page disk-cached'
+        )
+
+        const rsc = await next.fetch('/disk-cached', { headers: { RSC: '1' } })
+        expect(rsc.status).toBe(200)
+        expect(rsc.headers.get('content-type')).toContain('text/x-component')
+        expect(await rsc.text()).toContain('disk-cached')
       })
     }
   )
