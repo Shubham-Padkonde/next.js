@@ -1,0 +1,72 @@
+name: Validate Cache Components disk persistence
+on:
+  push:
+    branches: [ci/cache-components-disk-rsc-validation]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        bundler: [webpack, turbo]
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      NEXT_SKIP_NATIVE_POSTINSTALL: '0'
+      NEXT_TEST_PREFER_OFFLINE: '1'
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0853b077e450a1686afcee9bcb069a6a9493e5f2
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install -g corepack@0.34.7 && corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Formatting and lint
+        run: |
+          pnpm prettier --check packages/next/src/server/lib/incremental-cache/file-system-cache.ts test/production/app-dir/isr-cache-control-restart/isr-cache-control-restart.test.ts
+          pnpm exec eslint --config eslint.config.mjs packages/next/src/server/lib/incremental-cache/file-system-cache.ts test/production/app-dir/isr-cache-control-restart/isr-cache-control-restart.test.ts
+          git diff --check
+      - name: Build Next.js and environment package
+        run: |
+          pnpm --filter=@next/env build
+          pnpm --filter=next build
+      - name: File-system cache unit tests
+        if: matrix.bundler == 'webpack'
+        run: pnpm exec jest test/unit/incremental-cache/file-system-cache.test.ts --runInBand --json --outputFile=unit-results.json
+      - name: Restart and postponed PPR production tests
+        run: pnpm test-start-${{ matrix.bundler }} test/production/app-dir/isr-cache-control-restart/isr-cache-control-restart.test.ts test/production/app-dir/route-scoped-cache-ppr/route-scoped-cache-ppr.test.ts --json --outputFile=fixed-results.json
+      - name: Restore unchanged production source and rebuild
+        run: |
+          git show HEAD^:packages/next/src/server/lib/incremental-cache/file-system-cache.ts > packages/next/src/server/lib/incremental-cache/file-system-cache.ts
+          pnpm --filter=next build
+      - name: Confirm both new cases fail on unchanged source
+        shell: bash
+        run: |
+          set +e
+          pnpm test-start-${{ matrix.bundler }} test/production/app-dir/isr-cache-control-restart/isr-cache-control-restart.test.ts -t 'Cache Components file-system cache' --json --outputFile=baseline-results.json
+          result=$?
+          set -e
+          test "$result" -ne 0
+          node <<'NODE'
+          const fs = require('fs');
+          const results = JSON.parse(fs.readFileSync('baseline-results.json', 'utf8'));
+          const failed = results.testResults.flatMap(result => result.assertionResults).filter(result => result.status === 'failed');
+          if (failed.length !== 2 || failed.some(result => !result.fullName.includes('Cache Components file-system cache') || !result.failureMessages.join('\n').includes('HIT') || !result.failureMessages.join('\n').includes('MISS'))) {
+            throw new Error('Expected exactly two disk-cache MISS regressions');
+          }
+          console.log('Both new production cases fail with MISS instead of HIT on unchanged source.');
+          NODE
+          git restore packages/next/src/server/lib/incremental-cache/file-system-cache.ts
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disk-cache-${{ matrix.bundler }}-results
+          path: '*-results.json'
