@@ -35,8 +35,7 @@ jobs:
           git diff --check
       - name: Build Next.js and environment package
         run: |
-          pnpm --filter=@next/env build
-          pnpm --filter=next build
+          pnpm exec turbo run build --filter=next
       - name: File-system cache unit tests
         if: matrix.bundler == 'webpack'
         run: pnpm exec jest test/unit/incremental-cache/file-system-cache.test.ts --runInBand --json --outputFile=unit-results.json
