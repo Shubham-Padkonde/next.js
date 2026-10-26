@@ -669,8 +669,14 @@ export default class FileSystemCache implements CacheHandler {
 
       writer.append(htmlPath, data.html)
 
-      // Fallbacks don't generate a data file.
-      if (!ctx.fetchCache && !ctx.isFallback && !ctx.isRoutePPREnabled) {
+      // Fallbacks and postponed PPR shells don't generate a complete data file.
+      // Fully static PPR pages need one so they can be read back from disk.
+      if (
+        !ctx.fetchCache &&
+        !ctx.isFallback &&
+        (!ctx.isRoutePPREnabled ||
+          (data.kind === CachedRouteKind.APP_PAGE && data.postponed == null))
+      ) {
         writer.append(
           this.getFilePath(
             `${key}${isAppPath ? RSC_SUFFIX : NEXT_DATA_SUFFIX}`,
